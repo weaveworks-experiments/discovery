@@ -1,0 +1,216 @@
+#!/bin/sh
+set -e
+
+[ -n "$WEAVE_DEBUG" ] && set -x
+
+usage() {
+cat <<-EOF
+    Weave Discovery
+
+    Usage:
+
+    # joins a discovery URL
+    $ discovery join [--advertise=ADDR]
+                     [--advertise-external]
+                     [--weave=ADDR[:PORT]]    <URL>
+
+    where <URL>  = backend://path
+          <ADDR> = host|IP
+
+    # leaves current discovery URL
+    $ discovery leave
+
+    Example:
+
+    $ discovery join etcd://some/path
+EOF
+}
+
+DOCKERHUB_USER=${DOCKERHUB_USER:-weaveworks}
+BASE_DISCOVERY_IMAGE=$DOCKERHUB_USER/weavediscovery
+DISCOVERY_IMAGE=$BASE_DISCOVERY_IMAGE:$IMAGE_VERSION
+DISCOVERY_CONTAINER_NAME=${WEAVE_DISCOVERY_NAME:-weavediscovery}
+DISCOVERY_HTTP_PORT=6789
+DISCOVERY_HTTP_IFNAME=eth0
+
+WEAVER_CONTAINER_NAME=${WEAVE_CONTAINER_NAME:-weave}
+DEFAULT_WEAVER_ADDR=
+DEFAULT_WEAVER_PORT=6784
+WEAVER_ADDR=
+WEAVER_PORT=
+WEAVER_LOCAL_IP=
+
+ADVERTISE_EXTERNAL=
+ADVERTISED_ADDR=
+
+######################################################################
+# auxiliary functions
+######################################################################
+
+VALID_HOSTNAME_RE="^(([a-zA-Z]|[a-zA-Z][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z]|[A-Za-z][A-Za-z0-9\-]*[A-Za-z0-9])$"
+VALID_IP_RE="(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+
+log()               { echo "$1" >&2 ;            }
+warning()           { log "WARNING: $1" ;        }
+error()             { log "ERROR: $1" ;          }
+fatal()             { log "FATAL: $1" ; exit 1 ; }
+command_exists()    { command -v $1 >/dev/null 2>&1 ; }
+
+# Some auxiliary functions for names and IPs
+valid_ip()          { echo $1 | grep -E -q $VALID_IP_RE ;       }
+valid_hostname()    { echo $1 | grep -E -q $VALID_HOSTNAME_RE ; }
+valid_addr()        { valid_hostname $1 || valid_ip $1 ;        }
+valid_addr_or_die() { valid_addr $1     || fatal "'$1' does not seem a valid $2 address" ; }
+default_route_ip()  {  /sbin/ip route | awk '/default/ { print $3 }' ; }
+
+guess_external_ip_or_die() {
+    fatal_guess() { fatal "could not determine external IP address: $1" ; }
+    command_exists dig || fatal_guess "'dig' command not found"
+    ADVERTISED_ADDR=$(dig +short myip.opendns.com @resolver1.opendns.com)
+    [ -n "$ADVERTISED_ADDR" ] || fatal_guess "got '$ADVERTISED_ADDR'"
+}
+
+url_proto() {
+    echo $1 | grep :// | sed -e's,^\(.*\)://.*,\1,g'
+}
+
+# Print an error to stderr and return with an indicative exit status
+# if the container $1 does not exist or isn't running.
+check_running() {
+    if ! STATUS=$(docker inspect --format='{{.State.Running}}' $1 2>/dev/null); then
+        echo  "$1 container is not present. Have you launched it?" >&2
+        return 1
+    elif [ "$STATUS" != "true" ] ; then
+        echo "$1 container is not running." >&2
+        return 2
+    fi
+}
+
+# Check that a container named $1 with image $2 is not running
+check_not_running() {
+    case $(docker inspect --format='{{.State.Running}} {{.Config.Image}}' $1 2>/dev/null) in
+        "true $2")      fatal "$1 is already running."  ;;
+        "true $2:"*)    fatal "$1 is already running."  ;;
+        "false $2")     docker rm $1 >/dev/null  ;;
+        "false $2:"*)   docker rm $1 >/dev/null  ;;
+        true*)          fatal "Found another running container named '$1'. Aborting."  ;;
+        false*)         fatal "Found another container named '$1'. Aborting." ;;
+    esac
+}
+
+stop() {
+    if ! docker stop $1 >/dev/null 2>&1 ; then
+        echo "$2 is not running." >&2
+    fi
+    docker rm -f $1 >/dev/null 2>&1 || true
+}
+
+get_weaver_local_ip() {
+    fatal_get_ip() { fatal "could not determine router address: $1" ; }
+
+    if ! status=$(docker inspect --format='{{.State.Running}} {{.NetworkSettings.IPAddress}}' $WEAVER_CONTAINER_NAME 2>/dev/null) ; then
+        fatal "the router does not seem to be running"
+    fi
+    case "$status" in
+        "true ") fatal_get_ip "$WEAVER_CONTAINER_NAME container has no IP address; is Docker networking enabled?" >&2 ;;
+        true*)   WEAVER_LOCAL_IP="${status#true }" ;;
+        *)       fatal_get_ip "could not parse output" ;;
+    esac
+}
+
+launch_discovery() {
+    docker_args=$1
+    endpoint=$2
+
+    if [ -z "$WEAVER_ADDR" ] ; then
+        get_weaver_local_ip
+        WEAVER_ADDR=$WEAVER_LOCAL_IP
+    fi
+    valid_addr_or_die $WEAVER_ADDR "router"
+    weaver_url="http://$WEAVER_ADDR:${WEAVER_PORT:-$DEFAULT_WEAVER_PORT}"
+    
+    [ -n "$ADVERTISE_EXTERNAL" ] && guess_external_ip_or_die
+    if [ -z "$ADVERTISED_ADDR" ] ; then
+        # guess the address we will advertise
+        if [ -z "$WEAVER_LOCAL_IP" ] ; then
+            # we are using a remote router, so it could (/should) be advertised
+            ADVERTISED_ADDR=$WEAVER_ADDR
+        else
+            # the router IP was obtained from the local container, so we cannot advertise it
+            ADVERTISED_ADDR=$(default_route_ip)
+            warning "advertising default IP '$ADVERTISED_ADDR'"
+        fi
+    fi
+    valid_addr_or_die $ADVERTISED_ADDR "advertised"
+
+    # process file:// endpoints by mounting the files and rewritting the URL
+    proto=$(url_proto $endpoint)
+    [ -z "$proto" ] && fatal "'$endpoint' does not seem valid discovery endpoint"
+    docker_mount_args=
+    if [ "$proto" = "file" ] ; then
+        host_path="$(echo $endpoint | grep / | cut -d/ -f2- | tr -s '/')"
+        [ -f $host_path ] || fatal "file '$host_path' not found"
+        container_path="/tmp/$(basename $host_path)"
+        endpoint="file://$container_path"
+        docker_mount_args="-v $host_path:$container_path"
+    fi
+
+    # Set WEAVEDISCOVERY_DOCKER_ARGS in the environment in order to supply
+    # additional parameters, such as resource limits, to docker
+    # when launching the weave container.
+    DISCOVERY_CONTAINER=$(docker run -d --name=$DISCOVERY_CONTAINER_NAME \
+        -e WEAVE_CIDR=none \
+        $WEAVEDISCOVERY_DOCKER_ARGS $docker_args $DISCOVERY_IMAGE \
+            -http-iface "$DISCOVERY_HTTP_IFNAME" \
+            -local $ADVERTISED_ADDR \
+            -weave "$weaver_url" \
+            $endpoint )
+}
+
+##########################################################################################
+
+[ $# -gt 0 ] || usage
+COMMAND=$1
+shift 1
+
+case "$COMMAND" in
+    join)
+        check_not_running $DISCOVERY_CONTAINER_NAME $BASE_DISCOVERY_IMAGE
+        while [ $# -gt 0 ] ; do
+            case "$1" in
+                --advertise=*)
+                    ADVERTISED_ADDR="${1#*=}"
+                    ;;
+                --advertise-external)
+                    ADVERTISE_EXTERNAL=1
+                    ;;
+                --weave=*)
+                    WEAVER_ADDR=$(echo ${1#*=} | cut -d':' -f1)
+                    WEAVER_PORT=$(echo ${1#*=} | cut -d':' -f2 -s)
+                    ;;
+                *)
+                    break
+                    ;;
+            esac
+            shift
+        done
+        docker_args=
+        while [ $# -gt 1 ] ; do docker_args="$docker_args $1" ; shift ; done
+        [ $# -ge 1 ] || fatal "endpoint not provided"
+        endpoint=$1
+        launch_discovery "$docker_args" $endpoint
+        echo $DISCOVERY_CONTAINER
+        ;;
+    leave)
+        check_running $DISCOVERY_CONTAINER_NAME
+        stop $DISCOVERY_CONTAINER_NAME "Weave Discovery"
+        ;;
+    help|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "Unknown Discovery command '$COMMAND'" >&2
+        usage
+        ;;
+esac
