@@ -15,7 +15,7 @@ WEAVEDISCOVERY_UPTODATE=.weavediscovery.uptodate
 IMAGES_UPTODATE=$(WEAVEDISCOVERY_UPTODATE)
 WEAVEDISCOVERY_IMAGE=$(DOCKERHUB_USER)/weavediscovery
 IMAGES=$(WEAVEDISCOVERY_IMAGE)
-WEAVE_EXPORT=weave.tar
+WEAVE_EXPORT=weavediscovery.tar
 
 all: $(WEAVE_EXPORT)
 
@@ -56,10 +56,8 @@ $(PUBLISH): publish_%:
 publish: $(PUBLISH)
 
 clean:
-	-$(SUDO) docker rmi $(IMAGES)
-	rm -f $(EXES) $(IMAGES_UPTODATE) $(WEAVE_EXPORT)
-	rm -f test/tls/*.pem
-	rm -f coverage.html profile.cov
+	-$(SUDO) docker rmi $(IMAGES) 2>/dev/null
+	rm -f $(EXES) $(IMAGES_UPTODATE) $(WEAVE_EXPORT) test/tls/*.pem coverage.html profile.cov
 
 build:
 	$(SUDO) go clean -i net

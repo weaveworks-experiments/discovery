@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/docker/machine/drivers/vmwarevsphere/errors"
@@ -31,7 +32,7 @@ type discoveryEndpoint struct {
 }
 
 // Create a new endpoint
-func newDiscoveryEndpoint(url, localAddr string, weaveCli *WeaveClient, heartbeat time.Duration, ttl time.Duration) (*discoveryEndpoint, error) {
+func newDiscoveryEndpoint(url, localAddr string, discPort string, weaveCli *WeaveClient, heartbeat time.Duration, ttl time.Duration) (*discoveryEndpoint, error) {
 	d, err := discovery.New(url, heartbeat, ttl)
 	if err != nil {
 		return nil, err
@@ -43,10 +44,16 @@ func newDiscoveryEndpoint(url, localAddr string, weaveCli *WeaveClient, heartbea
 		stopChan:  stopChan,
 	}
 
-	entriesChan, errorsChan := d.Watch(stopChan)
-	ticker := time.NewTicker(heartbeat)
-	go func() {
-		register := func() {
+	register := func() {}
+	var localAddrHost, localAddrPort string
+	if len(localAddr) > 0 {
+		localAddrHost, localAddrPort, err = net.SplitHostPort(localAddr)
+		if err != nil {
+			Log.Warningf("[manager] Invalid local address '%s': %s", localAddr, err)
+			return nil, err
+		}
+
+		register = func() {
 			Log.Debugf("[manager] Registering on '%s' we are at '%s' (%s period)...", url, localAddr, heartbeat)
 			if err := d.Register(localAddr); err != nil {
 				Log.Warningf("[manager] Registration failed: %s", err)
@@ -54,7 +61,20 @@ func newDiscoveryEndpoint(url, localAddr string, weaveCli *WeaveClient, heartbea
 				ep.lastRegister = time.Now()
 			}
 		}
+	}
 
+	hostAndPort := func(e *discovery.Entry) (string, string, bool) {
+		host := e.Host
+		port := e.Port
+		if len(discPort) > 0 {
+			port = discPort
+		}
+		return host, port, (host == localAddrHost && port == localAddrPort)
+	}
+
+	entriesChan, errorsChan := d.Watch(stopChan)
+	ticker := time.NewTicker(heartbeat)
+	go func() {
 		register()
 		currentEntries := discovery.Entries{}
 		for {
@@ -68,10 +88,14 @@ func newDiscoveryEndpoint(url, localAddr string, weaveCli *WeaveClient, heartbea
 				currentEntries = reportedEntries
 				Log.Printf("[manager] Updates from '%s': %d added, %d removed...", url, len(added), len(removed))
 				for _, e := range added {
-					weaveCli.Join(e.Host, e.Port)
+					if host, port, isLocal := hostAndPort(e); !isLocal {
+						weaveCli.Join(host, port)
+					}
 				}
 				for _, e := range removed {
-					weaveCli.Forget(e.Host, e.Port)
+					if host, port, isLocal := hostAndPort(e); !isLocal {
+						weaveCli.Forget(host, port)
+					}
 				}
 			case reportedError := <-errorsChan:
 				Log.Warningf("[manager] Error from endpoint %s: %s...", url, reportedError)
@@ -140,14 +164,14 @@ func (dm *DiscoveryManager) Status() string {
 }
 
 // Join a discovery endpoint
-func (dm *DiscoveryManager) Join(url string, heartbeat time.Duration, ttl time.Duration) error {
+func (dm *DiscoveryManager) Join(url string, discPort string, heartbeat time.Duration, ttl time.Duration) error {
 	if _, found := dm.endpoints[url]; found {
 		Log.Debugf("[manager] Endpoint %s already joined: ignored", url)
 		return nil
 	}
 
 	Log.Debugf("[manager] Joining '%s'...", url)
-	d, err := newDiscoveryEndpoint(url, dm.localAddr, dm.weaveCli, heartbeat, ttl)
+	d, err := newDiscoveryEndpoint(url, dm.localAddr, discPort, dm.weaveCli, heartbeat, ttl)
 	if err != nil {
 		return err
 	}

@@ -177,7 +177,7 @@ func (dh *DiscoveryHTTP) Start() {
 				return
 			}
 
-			err = dh.dm.Join(urlParam, hb, ttl)
+			err = dh.dm.Join(urlParam, "", hb, ttl)
 			if err != nil {
 				Log.Warning(err)
 			}

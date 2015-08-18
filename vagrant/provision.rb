@@ -1,5 +1,40 @@
+
+# Give access to all physical cpu cores
+host = RbConfig::CONFIG['host_os']
+if host =~ /darwin/
+	$vm_cpus = `sysctl -n hw.physicalcpu`.to_i
+elsif host =~ /linux/
+	$vm_cpus = `cat /proc/cpuinfo | grep 'core id' | sort -u | wc -l`.to_i
+	if $vm_cpus < 1
+		$vm_cpus = `nproc`.to_i
+	end
+else
+	$vm_cpus = 2
+end
+
+# Give VM 512MB of RAM 
+$vm_mem = 2048
+
+# configure a machine
+def configure(host, hostname, ip)
+	host.vm.box     = "ubuntu/ubuntu-15.04-amd64"
+	host.vm.box_url = "https://cloud-images.ubuntu.com/vagrant/vivid/current/vivid-server-cloudimg-amd64-vagrant-disk1.box"
+
+	host.vm.synced_folder ".", "/vagrant", nfs: $use_nfs
+
+	host.vm.provider :virtualbox do |v|
+		v.customize ["modifyvm", :id, "--memory", $vm_mem]
+		v.customize ["modifyvm", :id, "--cpus",   $vm_cpus]
+
+		# Use faster paravirtualized networking
+		v.customize ["modifyvm", :id, "--nictype1", "virtio"]
+		v.customize ["modifyvm", :id, "--nictype2", "virtio"]
+	end
+end
+
+# basic provisioning
 def provision(host, hostname, ip)
-  pkgs = "aufs-tools ethtool daemon curl"
+  pkgs = "aufs-tools ethtool daemon curl ca-certificates"
 
   # install any extra packages (if needed)
   host.vm.provision :shell, :inline => <<SCRIPT
@@ -47,4 +82,3 @@ SCRIPT
 SCRIPT
 
 end
-

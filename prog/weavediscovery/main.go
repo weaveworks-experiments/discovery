@@ -24,6 +24,7 @@ func main() {
 		httpPort      int
 		localAddr     string
 		wait          int
+		discPort      string
 		hb            string
 		ttl           string
 		logLevel      string
@@ -32,12 +33,13 @@ func main() {
 
 	flag.BoolVar(&justVersion, "version", false, "print version and exit")
 	flag.StringVar(&routerURL, "weave", defaultWeaveURL, "weave API URL")
-	flag.StringVar(&localAddr, "local", "", "local address announced to other peers")
+	flag.StringVar(&localAddr, "local", "", "local address advertise to other peers (empty: not advertised)")
 	flag.IntVar(&wait, "wait", -1, "number of seconds to wait for interfaces to come up (0=don't wait, -1=wait forever)")
 	flag.StringVar(&hb, "hb", defaultHeartbeat, "heartbeat (with units)")
 	flag.StringVar(&ttl, "ttl", defaultTTL, "TTL (with units)")
 	flag.StringVar(&httpIfaceName, "http-iface", "", "interface on which to listen for HTTP requests (defaults to empty string which listens on all interfaces)")
 	flag.IntVar(&httpPort, "http-port", defaultHTTPPort, "port for the Discovery HTTP API")
+	flag.StringVar(&discPort, "discovered-port", "", "force a port for discovered peers")
 	flag.StringVar(&logLevel, "log-level", "info", "logging level (debug, info, warning, error)")
 	flag.BoolVar(&verbose, "v", false, "enable verbose mode (debug logging level)")
 
@@ -62,10 +64,9 @@ func main() {
 	SetLogLevel(logLevel)
 	Log.Infof("[main] WeaveDiscovery version %s", version) // first thing in log: the version
 
-	if len(localAddr) == 0 {
-		Log.Fatalf("[main] Local address not provided")
+	if len(localAddr) > 0 {
+		Log.Infof("[main] Will announce local address '%s'", localAddr)
 	}
-	Log.Infof("[main] Will announce local address '%s'", localAddr)
 
 	weaveCli, err := NewWeaveClient(routerURL)
 	if err != nil {
@@ -89,7 +90,7 @@ func main() {
 	if numEps > 0 {
 		Log.Debugf("[main] %d endpoints provided in arguments", numEps)
 		for _, ep := range flag.Args() {
-			if err = manager.Join(ep, hbDur, ttlDur); err != nil {
+			if err = manager.Join(ep, discPort, hbDur, ttlDur); err != nil {
 				Log.Fatalf("[main] Could not join '%s': %s", ep, err)
 			}
 		}
