@@ -87,7 +87,7 @@ func NewDiscoveryHTTP(config DiscoveryHTTPConfig) *DiscoveryHTTP {
 		httpIP = "0.0.0.0"
 	} else {
 		Log.Infoln("[http] Waiting for HTTP interface", config.Iface, "to come up")
-		httpIface, err := weavenet.EnsureInterface(config.Iface, config.Wait)
+		httpIface, err := weavenet.EnsureInterface(config.Iface)
 		if err != nil {
 			Log.Fatal(err)
 		}
