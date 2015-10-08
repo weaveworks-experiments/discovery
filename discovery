@@ -5,27 +5,30 @@ set -e
 
 usage() {
     cat <<-EOF
-    Weave Discovery
 
-    Usage:
+Weave Discovery
 
-    # joins a discovery URL
-    $ discovery join [--advertise=ADDR]
-                     [--advertise-external]
-                     [--advertise-router]
-                     [--weave=ADDR[:PORT]]    <URL>
+Usage:
 
-    where <URL>  = backend://path
-          <ADDR> = host|IP
+# joins a discovery URL
+$ discovery join [--advertise=ADDR]
+                 [--advertise-external]
+                 [--advertise-router]
+                 [--weave=ADDR[:PORT]]    <URL>
 
-    # leaves current discovery URL
-    $ discovery leave
+where <URL>  = backend://path
+      <ADDR> = host|IP
 
-    Example:
+# leaves current discovery URL
+$ discovery leave
 
-    $ discovery join etcd://some/path
+Example:
+
+$ discovery join etcd://some/path
+
 EOF
 }
+
 
 DOCKERHUB_USER=${DOCKERHUB_USER:-weaveworks}
 BASE_DISCOVERY_IMAGE=$DOCKERHUB_USER/weavediscovery
@@ -38,7 +41,7 @@ WEAVER_CONTAINER_NAME=${WEAVE_CONTAINER_NAME:-weave}
 DEFAULT_WEAVER_ADDR=
 DEFAULT_WEAVER_HTTP_PORT=6784
 WEAVER_ADDR=
-WEAVER_PORT=6783            # we can olnly use the standard port
+WEAVER_PORT=6783            # we can only use the standard port
 WEAVER_LOCAL_IP=
 
 ADVERTISE_EXTERNAL=
@@ -58,6 +61,7 @@ log()               { echo "$1" >&2 ;            }
 warning()           { log "WARNING: $1" ;        }
 error()             { log "ERROR: $1" ;          }
 fatal()             { log "FATAL: $1" ; exit 1 ; }
+usage_and_abort()   { [ -n "$1" ] && log "FATAL: $1" ; usage ; exit 1 ;           }
 command_exists()    { command -v $1 >/dev/null 2>&1 ; }
 
 parse_addr()        { echo $1 | cut -d':' -f1    ; }
@@ -120,9 +124,8 @@ stop() {
 get_weaver_local_ip() {
     fatal_get_ip() { fatal "could not determine router address: $1" ; }
 
-    if ! status=$(docker inspect --format='{{.State.Running}} {{.NetworkSettings.IPAddress}}' $WEAVER_CONTAINER_NAME 2>/dev/null) ; then
-        fatal "the router does not seem to be running"
-    fi
+    check_running $WEAVER_CONTAINER_NAME || fatal "Weave must be running"
+    status=$(docker inspect --format='{{.State.Running}} {{.NetworkSettings.IPAddress}}' $WEAVER_CONTAINER_NAME 2>/dev/null)
     case "$status" in
         "true ") fatal_get_ip "$WEAVER_CONTAINER_NAME container has no IP address; is Docker networking enabled?" >&2 ;;
         true*)   WEAVER_LOCAL_IP="${status#true }" ;;
@@ -146,14 +149,14 @@ launch_discovery() {
     if [ -n "$ADVERTISED_ADDR" ] ; then
         :
     elif [ -n "$ADVERTISE_EXTERNAL" ] ; then
-        ADVERTISED_ADDR="$(guess_external_ip_or_die):$WEAVER_PORT"
+        ADVERTISED_ADDR=$(guess_external_ip_or_die):$WEAVER_PORT
     elif [ -n "$ADVERTISE_ROUTER" ] ; then
         if [ -n "$WEAVER_ADDR"  ] ; then
             # we are using a remote router, so it could (/should) be advertised
-            ADVERTISED_ADDR="$WEAVER_ADDR:$$WEAVER_PORT"
+            ADVERTISED_ADDR=$WEAVER_ADDR:$WEAVER_PORT
         elif [ -n "$WEAVER_LOCAL_IP"  ] ; then
             # we are using a local router: we will advertise the default route IP
-            ADVERTISED_ADDR="$(default_route_ip):$WEAVER_PORT"
+            ADVERTISED_ADDR=$(default_route_ip):$WEAVER_PORT
         fi
     else
         warning "nothing will be advertised"
@@ -162,7 +165,7 @@ launch_discovery() {
     # when advertising, check there is a valid port in the $ADVERTISED_ADDR
     if [ -n "$ADVERTISED_ADDR" ] ; then
         valid_addr_and_port_or_die $ADVERTISED_ADDR "advertised"
-        log "will advertise $ADVERTISED_ADDR"
+        log "Discovery will advertise $ADVERTISED_ADDR"
         discovery_args="$discovery_args -local $ADVERTISED_ADDR"
     fi
 
@@ -178,8 +181,8 @@ launch_discovery() {
     if [ "$proto" = "file" ] ; then
         host_path="$(echo $endpoint | grep / | cut -d/ -f2- | tr -s '/')"
         [ -f $host_path ] || fatal "file '$host_path' not found"
-        container_path="/tmp/$(basename $host_path)"
-        endpoint="file://$container_path"
+        container_path=/tmp/$(basename $host_path)
+        endpoint=file://$container_path
         docker_mount_args="-v $host_path:$container_path"
     fi
 
@@ -199,7 +202,7 @@ launch_discovery() {
 
 ##########################################################################################
 
-[ $# -gt 0 ] || usage
+[ $# -gt 0 ] || usage_and_abort
 COMMAND=$1
 shift 1
 
@@ -247,6 +250,8 @@ case "$COMMAND" in
         ;;
     *)
         echo "Unknown Discovery command '$COMMAND'" >&2
-        usage
+        usage_and_abort
         ;;
 esac
+
+exit 0
