@@ -1,0 +1,33 @@
+general:
+  branches:
+    ignore:
+      - gh\-pages
+      - /pull\/.*/
+
+machine:
+  services:
+    - docker
+  environment:
+    GOPATH: /home/ubuntu:$GOPATH
+    SRCDIR: /home/ubuntu/src/github.com/weaveworks/discovery
+
+dependencies:
+  override:
+    - sudo apt-get update
+    - mkdir -p $(dirname $SRCDIR)
+    - cp -r $(pwd)/ $SRCDIR
+
+test:
+  override:
+    - make -C $SRCDIR deps
+    - make -C $SRCDIR test
+
+deployment:
+  hub:
+    branch: master
+    owner: weaveworks
+    commands:
+      - make SUDO= -C $SRCDIR dist
+      - docker login -e $DOCKER_EMAIL -u $DOCKER_USER -p $DOCKER_PASS
+      - make SUDO= -C $SRCDIR publish
+      - cp $SRCDIR/discovery $SRCDIR/weavediscovery.tar $CIRCLE_ARTIFACTS/

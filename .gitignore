@@ -1,2 +1,8 @@
 .idea
 .vagrant
+.weavediscovery.uptodate
+discovery.iml
+
+## artifacts
+weavediscovery.tar
+prog/weavediscovery/weavediscovery

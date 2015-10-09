@@ -7,7 +7,7 @@ PUBLISH=publish_weavediscovery
 SUDO=sudo
 
 DOCKERHUB_USER=weaveworks
-WEAVE_VERSION=git-$(shell git rev-parse --short=12 HEAD)
+WEAVEDISCOVERY_VERSION=git-$(shell git rev-parse --short=12 HEAD)
 
 WEAVEDISCOVERY_EXE=prog/weavediscovery/weavediscovery
 EXES=$(WEAVEDISCOVERY_EXE)
@@ -17,8 +17,7 @@ WEAVEDISCOVERY_IMAGE=$(DOCKERHUB_USER)/weavediscovery
 IMAGES=$(WEAVEDISCOVERY_IMAGE)
 WEAVE_EXPORT=weavediscovery.tar
 
-all: $(WEAVE_EXPORT)
-
+all:    $(WEAVE_EXPORT)
 travis: $(EXES)
 
 update:
@@ -26,7 +25,7 @@ update:
 
 $(WEAVEDISCOVERY_EXE):
 	go get -tags netgo ./$(@D)
-	go build -ldflags "-extldflags \"-static\" -X main.version $(WEAVE_VERSION)" -tags netgo -o $@ ./$(@D)
+	go build -ldflags "-extldflags \"-static\" -X main.version $(WEAVEDISCOVERY_VERSION)" -tags netgo -o $@ ./$(@D)
 	@strings $@ | grep cgo_stub\\\.go >/dev/null || { \
 		rm $@; \
 		echo "\nYour go standard library was built without the 'netgo' build tag."; \
@@ -49,8 +48,8 @@ $(DOCKER_DISTRIB):
 	curl -o $(DOCKER_DISTRIB) $(DOCKER_DISTRIB_URL)
 
 $(PUBLISH): publish_%:
-	$(SUDO) docker tag -f $(DOCKERHUB_USER)/$* $(DOCKERHUB_USER)/$*:$(WEAVE_VERSION)
-	$(SUDO) docker push   $(DOCKERHUB_USER)/$*:$(WEAVE_VERSION)
+	$(SUDO) docker tag -f $(DOCKERHUB_USER)/$* $(DOCKERHUB_USER)/$*:$(WEAVEDISCOVERY_VERSION)
+	$(SUDO) docker push   $(DOCKERHUB_USER)/$*:$(WEAVEDISCOVERY_VERSION)
 	$(SUDO) docker push   $(DOCKERHUB_USER)/$*:latest
 
 publish: $(PUBLISH)
@@ -59,7 +58,14 @@ clean:
 	-$(SUDO) docker rmi $(IMAGES) 2>/dev/null
 	rm -f $(EXES) $(IMAGES_UPTODATE) $(WEAVE_EXPORT) test/tls/*.pem coverage.html profile.cov
 
-build:
+deps:
+	go get -tags netgo ./...
+
+netgo-std:
 	$(SUDO) go clean -i net
 	$(SUDO) go install -tags netgo std
-	$(MAKE)
+
+dist: netgo-std $(WEAVE_EXPORT)
+
+test:
+	go test -tags netgo ./...
