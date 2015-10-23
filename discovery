@@ -127,7 +127,7 @@ get_weaver_local_ip() {
     check_running $WEAVER_CONTAINER_NAME || fatal "Weave must be running"
     status=$(docker inspect --format='{{.State.Running}} {{.NetworkSettings.IPAddress}}' $WEAVER_CONTAINER_NAME 2>/dev/null)
     case "$status" in
-        "true ") fatal_get_ip "$WEAVER_CONTAINER_NAME container has no IP address; is Docker networking enabled?" >&2 ;;
+        "true ") WEAVER_LOCAL_IP="127.0.0.1" ;;
         true*)   WEAVER_LOCAL_IP="${status#true }" ;;
         *)       fatal_get_ip "could not parse output" ;;
     esac
