@@ -29,7 +29,7 @@ $ discovery join etcd://some/path
 EOF
 }
 
-
+DOCKER_BRIDGE=${DOCKER_BRIDGE:-docker0}
 DOCKERHUB_USER=${DOCKERHUB_USER:-weaveworks}
 BASE_DISCOVERY_IMAGE=$DOCKERHUB_USER/weavediscovery
 DISCOVERY_IMAGE=$BASE_DISCOVERY_IMAGE:$IMAGE_VERSION
@@ -76,6 +76,12 @@ valid_addr_or_die()          { valid_addr $1     || fatal "'$1' does not seem a 
 valid_addr_and_port()        { valid_addr $(parse_addr $1) && valid_port_num $(parse_port $1) ; }
 valid_addr_and_port_or_die() { valid_addr_and_port $1 || fatal "'$1' does not seem a valid $2 address and port" ; }
 
+docker_bridge_ip() {
+    DOCKER_BRIDGE_IP=$(ip -4 addr show dev $DOCKER_BRIDGE | grep -m1 -o 'inet [.0-9]*')
+    DOCKER_BRIDGE_IP=${DOCKER_BRIDGE_IP#inet }
+    echo $DOCKER_BRIDGE_IP
+}
+
 default_route_ip()  {  /sbin/ip route | awk '/default/ { print $3 }' ; }
 
 guess_external_ip_or_die() {
@@ -121,18 +127,6 @@ stop() {
     docker rm -f $1 >/dev/null 2>&1 || true
 }
 
-get_weaver_local_ip() {
-    fatal_get_ip() { fatal "could not determine router address: $1" ; }
-
-    check_running $WEAVER_CONTAINER_NAME || fatal "Weave must be running"
-    status=$(docker inspect --format='{{.State.Running}} {{.NetworkSettings.IPAddress}}' $WEAVER_CONTAINER_NAME 2>/dev/null)
-    case "$status" in
-        "true ") WEAVER_LOCAL_IP="127.0.0.1" ;;
-        true*)   WEAVER_LOCAL_IP="${status#true }" ;;
-        *)       fatal_get_ip "could not parse output" ;;
-    esac
-}
-
 launch_discovery() {
     docker_args=$1
     endpoint=$2
@@ -140,11 +134,13 @@ launch_discovery() {
 
     # check there is router we can talk to
     if [ -z "$WEAVER_ADDR" ] ; then
-        get_weaver_local_ip
-        WEAVER_ADDR=$WEAVER_LOCAL_IP
+        # use the local docker0 address (eg, 172.17.42.1) for sending API request
+        WEAVER_API_IP=$(docker_bridge_ip)
+    else
+        WEAVER_API_IP=$WEAVER_ADDR
     fi
     valid_addr_or_die $WEAVER_ADDR "router"
-    weaver_http_url="http://$WEAVER_ADDR:$DEFAULT_WEAVER_HTTP_PORT"
+    weaver_http_url="http://$WEAVER_API_IP:$DEFAULT_WEAVER_HTTP_PORT"
 
     if [ -n "$ADVERTISED_ADDR" ] ; then
         :
@@ -154,7 +150,10 @@ launch_discovery() {
         if [ -n "$WEAVER_ADDR"  ] ; then
             # we are using a remote router, so it could (/should) be advertised
             ADVERTISED_ADDR=$WEAVER_ADDR:$WEAVER_PORT
-        elif [ -n "$WEAVER_LOCAL_IP"  ] ; then
+        else
+            check_running $WEAVER_CONTAINER_NAME || \
+                fatal "trying to advertise local router, but it is not running"
+
             # we are using a local router: we will advertise the default route IP
             ADVERTISED_ADDR=$(default_route_ip):$WEAVER_PORT
         fi
