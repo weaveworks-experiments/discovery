@@ -13,10 +13,10 @@ Installation
 ============
 
 Just download the `discovery` script from the repository,
-or use this short URL:
+or use this URL:
 
 ```
-curl -O http://git.io/vmW3z
+curl -L -O https://raw.githubusercontent.com/weaveworks/discovery/master/discovery
 chmod a+x discovery
 ```
 
